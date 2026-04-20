@@ -168,6 +168,7 @@ class Trainer:
         # temporary results saving
         temp_table = {}
         for mkey in self.metric_keys: temp_table[mkey] = []
+        acc_matrix = np.zeros((self.max_task, self.max_task), dtype=np.float32)
         temp_dir = self.log_dir + '/temp/'
         if not os.path.exists(temp_dir): os.makedirs(temp_dir)
 
@@ -230,8 +231,21 @@ class Trainer:
             acc_table_ssl = []
             self.reset_cluster_labels = True
             for j in range(i+1):
-                acc_table.append(self.task_eval(j))
-            temp_table['acc'].append(np.mean(np.asarray(acc_table)))
+                acc = self.task_eval(j)
+                acc_table.append(acc)
+                acc_matrix[j, i] = acc
+            avg_acc = np.mean(np.asarray(acc_table))
+            temp_table['acc'].append(avg_acc)
+
+            if i > 0:
+                max_acc_till_now = np.max(acc_matrix[:i, :i+1], axis=1)
+                forgetting = np.mean(max_acc_till_now - acc_matrix[:i, i])
+            else:
+                forgetting = 0.0
+            result_str = "[Average accuracy till task{}]\tAcc@1: {:.4f}\tForgetting: {:.4f}".format(
+                i + 1, avg_acc, forgetting
+            )
+            print(result_str)
 
             # save temporary acc results
             for mkey in ['acc']:
