@@ -12,6 +12,23 @@ import random
 import torchvision.datasets as datasets
 import yaml
 
+from pathlib import Path
+
+try:
+    import decord
+    # Tell decord to return PyTorch tensors directly
+    decord.bridge.set_bridge('torch')
+except ImportError:
+    raise ImportError("Please install decord: pip install decord")
+
+def collate_video(batch):
+    """
+    Returns (B, S, C, H, W) videos and (B,) labels — no flattening.
+    Segment averaging happens inside evaluate() after the forward pass.
+    """
+    videos, labels, task_ids = zip(*batch)
+    return torch.stack(videos, dim=0), torch.as_tensor(labels, dtype=torch.long), torch.as_tensor(task_ids, dtype=torch.long)
+
 class iDataset(data.Dataset):
     
     def __init__(self, root,
@@ -364,6 +381,242 @@ class iDOMAIN_NET(iIMAGENET_R):
             data_config = yaml.load(open('dataloaders/splits/domainnet_test.yaml', 'r'), Loader=yaml.Loader)
         self.data = data_config['data']
         self.targets = data_config['targets']
+
+class iUCF101(iDataset):
+    """
+    Online Dataset for UCF101 Class-Incremental Learning for CODA-Prompt.
+    """
+    im_size = 224
+    nch = 3
+
+    def load(self):
+        self.num_segments = 3
+        self.video_root = Path(self.root) / "videos"
+
+        if not self.video_root.exists():
+            raise FileNotFoundError(f"Video directory not found at {self.video_root}")
+
+        self._available_videos = {}
+        for ext in ['.mp4', '.avi', '.mkv', '.webm']:
+            for p in self.video_root.glob(f"*/*{ext}"):
+                self._available_videos[f"{p.parent.name}/{p.stem}"] = p
+
+        # Dynamically load the correct PKL based on max_tasks/num_tasks passed from trainer
+        num_tasks = len(self.tasks) 
+        pkl_file = Path(self.root) / f"UCF101_data_{num_tasks}tasks.pkl"
+        with open(pkl_file, 'rb') as f:
+            pkl_data = pickle.load(f)
+            
+        split_key = 'train' if self.train else 'test'
+        
+        self.classes = []
+        seen = set()
+        for task_dict in pkl_data["train"]:
+            for cls_name in task_dict.keys():
+                if cls_name not in seen:
+                    self.classes.append(cls_name)
+                    seen.add(cls_name)
+                    
+        self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
+        
+        self.class_mask = [
+            [self.class_to_idx[cls_name] for cls_name in task_dict.keys() if cls_name in self.class_to_idx]
+            for task_dict in pkl_data["train"]
+        ]
+        
+        # Override the tasks list passed from trainer.py to strictly match the PKL file
+        self.tasks.clear()
+        for mask in self.class_mask:
+            self.tasks.append(mask)
+
+        self.data = []
+        self.targets = []
+        self.task_ids = []
+        
+        for task_id, task_dict in enumerate(pkl_data[split_key]):
+            for cls_name, entries in task_dict.items():
+                if cls_name not in self.class_to_idx:
+                    continue  
+                
+                label = self.class_to_idx[cls_name]
+                
+                for entry in entries:
+                    video_path = self._available_videos.get(f"{cls_name}/{entry}")
+                    if video_path is None:
+                        continue
+                        
+                    self.data.append({
+                        'video_path': str(video_path),
+                        'cls_name': cls_name
+                    })
+                    self.targets.append(label)
+                    self.task_ids.append(task_id)
+
+    def __init__(self, root, train=True, transform=None, download_flag=False, lab=True, swap_dset=None, tasks=None, seed=-1, rand_split=False, validation=False, kfolds=5):
+        # Let iDataset handle basic property setup and mapping
+        super().__init__(root, train, transform, download_flag, lab, swap_dset, tasks, seed, rand_split, validation, kfolds)
+        
+        # EXPLICIT OVERRIDE: Re-build self.archive strictly using the task_ids array matching the PKL
+        # This matches your exact requested Subset logic: [i for i, t_id in enumerate(dataset.task_ids) if t_id == task_id]
+        self.archive = []
+        for task_id in range(len(self.class_mask)):
+            split_indices = [i for i, t_id in enumerate(self.task_ids) if t_id == task_id]
+            self.archive.append((self.data[split_indices].copy(), self.targets[split_indices].copy()))
+
+    def __getitem__(self, index, simple=False):
+        sample = self.data[index]
+        target = self.targets[index]
+        
+        vr = decord.VideoReader(sample['video_path'], ctx=decord.cpu(), num_threads=1)
+        fps = vr.get_avg_fps()
+        total_frames = len(vr)
+        duration = total_frames / fps
+        
+        t_start = 0.0
+        t_end = duration
+        seg_duration = max(t_end - t_start, 0.1) / self.num_segments
+        
+        frame_indices = []
+        for i in range(self.num_segments):
+            s = t_start + i * seg_duration
+            e = t_start + (i + 1) * seg_duration
+            if self.train:
+                t = random.uniform(s, e)
+            else:
+                t = (s + e) / 2.0
+                
+            f_idx = int(t * fps)
+            f_idx = min(max(f_idx, 0), total_frames - 1)
+            frame_indices.append(f_idx)
+            
+        frames_tensor = vr.get_batch(frame_indices)
+        frames_pil = [Image.fromarray(frame.numpy()) for frame in frames_tensor]
+        
+        if self.transform is not None:
+            frames_transformed = [self.transform(img) for img in frames_pil]
+            video_tensor = torch.stack(frames_transformed)
+        else:
+            video_tensor = frames_tensor.permute(0, 3, 1, 2).float() / 255.0
+
+        return video_tensor, self.class_mapping[target], self.t
+
+class iActivityNet(iDataset):
+    """
+    Online Dataset for ActivityNet Class-Incremental Learning for CODA-Prompt.
+    """
+    im_size = 224
+    nch = 3
+
+    def load(self):
+        self.num_segments = 3
+        self.video_root = Path(self.root) / "AnetVideos"
+
+        if not self.video_root.exists():
+            raise FileNotFoundError(f"Video directory not found at {self.video_root}")
+
+        self._available_videos = {}
+        for ext in ['.mp4', '.avi', '.mkv', '.webm']:
+            for p in self.video_root.glob(f"*{ext}"):
+                self._available_videos[p.stem] = p
+
+        num_tasks = len(self.tasks) 
+        pkl_file = Path(self.root) / f"ActivityNet_data_{num_tasks}tasks.pkl"
+        with open(pkl_file, 'rb') as f:
+            pkl_data = pickle.load(f)
+            
+        split_key = 'train' if self.train else 'val'
+        
+        self.classes = []
+        seen = set()
+        for task_dict in pkl_data["train"]:
+            for cls_name in task_dict.keys():
+                if cls_name not in seen:
+                    self.classes.append(cls_name)
+                    seen.add(cls_name)
+                    
+        self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
+        
+        self.class_mask = [
+            [self.class_to_idx[cls_name] for cls_name in task_dict.keys() if cls_name in self.class_to_idx]
+            for task_dict in pkl_data["train"]
+        ]
+        
+        # Override the tasks list passed from trainer.py to strictly match the PKL file
+        self.tasks.clear()
+        for mask in self.class_mask:
+            self.tasks.append(mask)
+
+        self.data = []
+        self.targets = []
+        self.task_ids = []
+        
+        for task_id, task_dict in enumerate(pkl_data[split_key]):
+            for cls_name, entries in task_dict.items():
+                if cls_name not in self.class_to_idx:
+                    continue  
+                
+                label = self.class_to_idx[cls_name]
+                
+                for entry in entries:
+                    video_path = self._available_videos.get(entry['filename'])
+                    if video_path is None:
+                        continue
+                        
+                    self.data.append({
+                        'video_path': str(video_path),
+                        't_start': float(entry['t_start']),
+                        't_end': float(entry['t_end']),
+                        'cls_name': cls_name
+                    })
+                    self.targets.append(label)
+                    self.task_ids.append(task_id)
+
+    def __init__(self, root, train=True, transform=None, download_flag=False, lab=True, swap_dset=None, tasks=None, seed=-1, rand_split=False, validation=False, kfolds=5):
+        # Let iDataset handle basic property setup and mapping
+        super().__init__(root, train, transform, download_flag, lab, swap_dset, tasks, seed, rand_split, validation, kfolds)
+        
+        # EXPLICIT OVERRIDE: Re-build self.archive strictly using the task_ids array matching the PKL
+        self.archive = []
+        for task_id in range(len(self.class_mask)):
+            split_indices = [i for i, t_id in enumerate(self.task_ids) if t_id == task_id]
+            self.archive.append((self.data[split_indices].copy(), self.targets[split_indices].copy()))
+
+    def __getitem__(self, index, simple=False):
+        sample = self.data[index]
+        target = self.targets[index]
+        
+        vr = decord.VideoReader(sample['video_path'], ctx=decord.cpu(), num_threads=1)
+        fps = vr.get_avg_fps()
+        total_frames = len(vr)
+        duration = total_frames / fps
+        
+        t_start = max(0.0, sample['t_start'])
+        t_end = min(duration, sample['t_end'])
+        seg_duration = max(t_end - t_start, 0.1) / self.num_segments
+        
+        frame_indices = []
+        for i in range(self.num_segments):
+            s = t_start + i * seg_duration
+            e = t_start + (i + 1) * seg_duration
+            if self.train:
+                t = random.uniform(s, e)
+            else:
+                t = (s + e) / 2.0
+                
+            f_idx = int(t * fps)
+            f_idx = min(max(f_idx, 0), total_frames - 1)
+            frame_indices.append(f_idx)
+            
+        frames_tensor = vr.get_batch(frame_indices)
+        frames_pil = [Image.fromarray(frame.numpy()) for frame in frames_tensor]
+        
+        if self.transform is not None:
+            frames_transformed = [self.transform(img) for img in frames_pil]
+            video_tensor = torch.stack(frames_transformed)
+        else:
+            video_tensor = frames_tensor.permute(0, 3, 1, 2).float() / 255.0
+
+        return video_tensor, self.class_mapping[target], self.t
 
 def jpg_image_to_array(image_path):
     """

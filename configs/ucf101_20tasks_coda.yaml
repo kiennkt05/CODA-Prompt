@@ -1,0 +1,19 @@
+dataset: UCF101
+first_split_size: 6
+other_split_size: 5
+schedule:
+- 20
+schedule_type: cosine
+batch_size: 96
+optimizer: Adam
+lr: 0.001
+momentum: 0.9
+weight_decay: 0
+model_type: zoo
+model_name: vit_pt_imnet
+max_task: -1
+dataroot: /kaggle/input/datasets/nguyntrungkinkin/ucf101
+workers: 4
+validation: False
+train_aug: True
+rand_split: False

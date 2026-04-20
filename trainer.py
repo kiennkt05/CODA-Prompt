@@ -11,6 +11,8 @@ from dataloaders.utils import *
 from torch.utils.data import DataLoader
 import learners
 
+from dataloaders.dataloader import collate_video
+
 class Trainer:
 
     def __init__(self, args, seed, metric_keys, save_keys):
@@ -47,8 +49,28 @@ class Trainer:
             num_classes = 345
             self.dataset_size = [224,224,3]
             self.top_k = 1
+        elif args.dataset == 'UCF101':
+            Dataset = dataloaders.iUCF101
+            num_classes = 101
+            self.dataset_size = [224,224,3]
+            self.top_k = 1
+        elif args.dataset == 'ActivityNet':
+            Dataset = dataloaders.iActivityNet
+            num_classes = 200
+            self.dataset_size = [224,224,3]
+            self.top_k = 1
         else:
             raise ValueError('Dataset not implemented!')
+
+        # --- SETUP VIDEO COLLATE AND BATCH SIZE ---
+        if args.dataset in ['UCF101', 'ActivityNet']:
+            self.collate_fn = collate_video
+            n_seg = getattr(args, "num_segments", 3) # Default to 3
+            self.eff_batch_size = max(1, self.batch_size // n_seg)
+            print(f"Video dataset detected: DataLoader batch_size {self.batch_size} -> {self.eff_batch_size} videos/step (num_segments={n_seg}).")
+        else:
+            self.collate_fn = None
+            self.eff_batch_size = self.batch_size
 
         # upper bound flag
         if args.upper_bound_flag:
@@ -135,7 +157,7 @@ class Trainer:
         
         # eval
         self.test_dataset.load_dataset(t_index, train=True)
-        test_loader  = DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, drop_last=False, num_workers=self.workers)
+        test_loader  = DataLoader(self.test_dataset, batch_size=self.eff_batch_size, shuffle=False, drop_last=False, num_workers=self.workers, collate_fn=self.collate_fn)
         if local:
             return self.learner.validation(test_loader, task_in = self.tasks_logits[t_index], task_metric=task)
         else:
@@ -182,7 +204,7 @@ class Trainer:
             self.train_dataset.append_coreset(only=False)
 
             # load dataloader
-            train_loader = DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, drop_last=True, num_workers=int(self.workers))
+            train_loader = DataLoader(self.train_dataset, batch_size=self.eff_batch_size, shuffle=True, drop_last=True, num_workers=int(self.workers), collate_fn=self.collate_fn)
 
             # increment task id in prompting modules
             if i > 0:
@@ -195,7 +217,7 @@ class Trainer:
 
             # learn
             self.test_dataset.load_dataset(i, train=False)
-            test_loader  = DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, drop_last=False, num_workers=self.workers)
+            test_loader  = DataLoader(self.test_dataset, batch_size=self.eff_batch_size, shuffle=False, drop_last=False, num_workers=self.workers, collate_fn=self.collate_fn)
             model_save_dir = self.model_top_dir + '/models/repeat-'+str(self.seed+1)+'/task-'+self.task_names[i]+'/'
             if not os.path.exists(model_save_dir): os.makedirs(model_save_dir)
             avg_train_time = self.learner.learn_batch(train_loader, self.train_dataset, model_save_dir, test_loader)

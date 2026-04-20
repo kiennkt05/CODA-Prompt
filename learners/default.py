@@ -148,8 +148,19 @@ class NormalNN(nn.Module):
 
     def update_model(self, inputs, targets, target_scores = None, dw_force = None, kd_index = None):
         
+        is_multiseg = (inputs.ndim == 5)
+        if is_multiseg:
+            B, S, C, H, W = inputs.shape
+            inputs = inputs.reshape(B * S, C, H, W)
+        else:
+            B = inputs.shape[0]
+
         dw_cls = self.dw_k[-1 * torch.ones(targets.size()).long()]
         logits = self.forward(inputs)
+        
+        if is_multiseg:
+            logits = logits.reshape(B, S, -1).mean(dim=1)
+
         total_loss = self.criterion(logits, targets.long(), dw_cls)
 
         self.optimizer.zero_grad()
@@ -176,7 +187,18 @@ class NormalNN(nn.Module):
                     input = input.cuda()
                     target = target.cuda()
             if task_in is None:
-                output = model.forward(input)[:, :self.valid_out_dim]
+                is_multiseg = (input.ndim == 5)
+                if is_multiseg:
+                    B, S, C, H, W = input.shape
+                    flat_input = input.reshape(B * S, C, H, W)
+                else:
+                    flat_input = input
+                    B = input.shape[0]
+
+                output = model.forward(flat_input)
+                if is_multiseg:
+                    output = output.reshape(B, S, -1).mean(dim=1)
+                output = output[:, :self.valid_out_dim]
                 acc = accumulate_acc(output, target, task, acc, topk=(self.top_k,))
             else:
                 mask = target >= task_in[0]
@@ -188,11 +210,23 @@ class NormalNN(nn.Module):
                 input, target = input[mask_ind], target[mask_ind]
                 
                 if len(target) > 1:
+                    is_multiseg = (input.ndim == 5)
+                    if is_multiseg:
+                        B, S, C, H, W = input.shape
+                        flat_input = input.reshape(B * S, C, H, W)
+                    else:
+                        flat_input = input
+                        B = input.shape[0]
+
+                    output = model.forward(flat_input)
+                    if is_multiseg:
+                        output = output.reshape(B, S, -1).mean(dim=1)
+
                     if task_global:
-                        output = model.forward(input)[:, :self.valid_out_dim]
+                        output = output[:, :self.valid_out_dim]
                         acc = accumulate_acc(output, target, task, acc, topk=(self.top_k,))
                     else:
-                        output = model.forward(input)[:, task_in]
+                        output = output[:, task_in]
                         acc = accumulate_acc(output, target-task_in[0], task, acc, topk=(self.top_k,))
             
         model.train(orig_mode)
@@ -320,8 +354,18 @@ class FinetunePlus(NormalNN):
 
     def update_model(self, inputs, targets, target_KD = None):
 
+        is_multiseg = (inputs.ndim == 5)
+        if is_multiseg:
+            B, S, C, H, W = inputs.shape
+            inputs = inputs.reshape(B * S, C, H, W)
+        else:
+            B = inputs.shape[0]
+
         # get output
         logits = self.forward(inputs)
+        
+        if is_multiseg:
+            logits = logits.reshape(B, S, -1).mean(dim=1)
 
         # standard ce
         logits[:,:self.last_valid_out_dim] = -float('inf')

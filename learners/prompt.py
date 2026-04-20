@@ -24,8 +24,19 @@ class Prompt(NormalNN):
 
     def update_model(self, inputs, targets):
 
+        is_multiseg = (inputs.ndim == 5)
+        if is_multiseg:
+            B, S, C, H, W = inputs.shape
+            inputs = inputs.reshape(B * S, C, H, W)
+        else:
+            B = inputs.shape[0]
+
         # logits
         logits, prompt_loss = self.model(inputs, train=True)
+        
+        if is_multiseg:
+            logits = logits.reshape(B, S, -1).mean(dim=1)
+            
         logits = logits[:,:self.valid_out_dim]
 
         # ce with heuristic
