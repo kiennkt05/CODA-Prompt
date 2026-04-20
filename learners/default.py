@@ -180,36 +180,13 @@ class NormalNN(nn.Module):
 
         orig_mode = model.training
         model.eval()
-        for i, (input, target, task) in enumerate(dataloader):
+        with torch.no_grad():
+            for i, (input, target, task) in enumerate(dataloader):
 
-            if self.gpu:
-                with torch.no_grad():
+                if self.gpu:
                     input = input.cuda()
                     target = target.cuda()
-            if task_in is None:
-                is_multiseg = (input.ndim == 5)
-                if is_multiseg:
-                    B, S, C, H, W = input.shape
-                    flat_input = input.reshape(B * S, C, H, W)
-                else:
-                    flat_input = input
-                    B = input.shape[0]
-
-                output = model.forward(flat_input)
-                if is_multiseg:
-                    output = output.reshape(B, S, -1).mean(dim=1)
-                output = output[:, :self.valid_out_dim]
-                acc = accumulate_acc(output, target, task, acc, topk=(self.top_k,))
-            else:
-                mask = target >= task_in[0]
-                mask_ind = mask.nonzero().view(-1) 
-                input, target = input[mask_ind], target[mask_ind]
-
-                mask = target < task_in[-1]
-                mask_ind = mask.nonzero().view(-1) 
-                input, target = input[mask_ind], target[mask_ind]
-                
-                if len(target) > 1:
+                if task_in is None:
                     is_multiseg = (input.ndim == 5)
                     if is_multiseg:
                         B, S, C, H, W = input.shape
@@ -221,13 +198,36 @@ class NormalNN(nn.Module):
                     output = model.forward(flat_input)
                     if is_multiseg:
                         output = output.reshape(B, S, -1).mean(dim=1)
+                    output = output[:, :self.valid_out_dim]
+                    acc = accumulate_acc(output, target, task, acc, topk=(self.top_k,))
+                else:
+                    mask = target >= task_in[0]
+                    mask_ind = mask.nonzero().view(-1) 
+                    input, target = input[mask_ind], target[mask_ind]
 
-                    if task_global:
-                        output = output[:, :self.valid_out_dim]
-                        acc = accumulate_acc(output, target, task, acc, topk=(self.top_k,))
-                    else:
-                        output = output[:, task_in]
-                        acc = accumulate_acc(output, target-task_in[0], task, acc, topk=(self.top_k,))
+                    mask = target < task_in[-1]
+                    mask_ind = mask.nonzero().view(-1) 
+                    input, target = input[mask_ind], target[mask_ind]
+                    
+                    if len(target) > 1:
+                        is_multiseg = (input.ndim == 5)
+                        if is_multiseg:
+                            B, S, C, H, W = input.shape
+                            flat_input = input.reshape(B * S, C, H, W)
+                        else:
+                            flat_input = input
+                            B = input.shape[0]
+
+                        output = model.forward(flat_input)
+                        if is_multiseg:
+                            output = output.reshape(B, S, -1).mean(dim=1)
+
+                        if task_global:
+                            output = output[:, :self.valid_out_dim]
+                            acc = accumulate_acc(output, target, task, acc, topk=(self.top_k,))
+                        else:
+                            output = output[:, task_in]
+                            acc = accumulate_acc(output, target-task_in[0], task, acc, topk=(self.top_k,))
             
         model.train(orig_mode)
 
