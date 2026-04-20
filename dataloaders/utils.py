@@ -22,6 +22,10 @@ dataset_stats = {
                  'size' : 224}, 
     'DomainNet': {
                  'size' : 224},  
+    'UCF101': {
+                 'size' : 224},
+    'ActivityNet': {
+                 'size' : 224},
                 }
                 
 # transformations
