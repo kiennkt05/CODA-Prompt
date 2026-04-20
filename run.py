@@ -27,6 +27,7 @@ def create_args():
     parser.add_argument('--debug_mode', type=int, default=0, metavar='N',
                         help="activate learner specific settings for debug_mode")
     parser.add_argument('--repeat', type=int, default=1, help="Repeat the experiment N times")
+    parser.add_argument('--seed', type=int, default=0, help="Base random seed")
     parser.add_argument('--overwrite', type=int, default=0, metavar='N', help='Train regardless of whether saved model exists')
 
     # CL Args          
@@ -123,7 +124,7 @@ if __name__ == '__main__':
         print('************************************')
 
         # set random seeds
-        seed = r
+        seed = args.seed + r
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
