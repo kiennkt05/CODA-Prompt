@@ -60,7 +60,8 @@ def get_transform(dataset='cifar100', phase='test', aug=True, resize_imnet=False
                                 ])
         else:
             transform_list.extend([
-                transforms.Resize(224),
+                # Force fixed spatial size for ViT-style patch embedding.
+                transforms.Resize((224, 224)),
                 transforms.ToTensor(),
                 transforms.Normalize(dset_mean, dset_std),
                                 ])
