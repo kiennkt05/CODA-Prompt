@@ -120,11 +120,11 @@ if __name__ == '__main__':
     for r in range(start_r, args.repeat):
 
         print('************************************')
-        print('* STARTING TRIAL ' + str(r+1))
+        print('* STARTING SEED: ' + str(args.seed))
         print('************************************')
 
         # set random seeds
-        seed = args.seed + r
+        seed = args.seed
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
