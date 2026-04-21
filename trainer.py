@@ -15,10 +15,12 @@ from dataloaders.dataloader import collate_video
 
 class Trainer:
 
-    def __init__(self, args, seed, metric_keys, save_keys):
+    def __init__(self, args, seed, metric_keys, save_keys, repeat_idx=0):
 
         # process inputs
         self.seed = seed
+        # index into avg_metrics[*] last dim (sized by args.repeat), not the RNG seed
+        self.repeat_idx = repeat_idx
         self.metric_keys = metric_keys
         self.save_keys = save_keys
         self.log_dir = args.log_dir
@@ -272,12 +274,12 @@ class Trainer:
             for j in range(i+1):
                 val_name = self.task_names[j]
                 cls_acc_sum += acc_table[val_name][train_name]
-                avg_acc_pt[j,i,self.seed] = acc_table[val_name][train_name]
-                avg_acc_pt_local[j,i,self.seed] = acc_table_pt[val_name][train_name]
+                avg_acc_pt[j,i,self.repeat_idx] = acc_table[val_name][train_name]
+                avg_acc_pt_local[j,i,self.repeat_idx] = acc_table_pt[val_name][train_name]
             avg_acc_history[i] = cls_acc_sum / (i + 1)
 
         # Gather the final avg accuracy
-        avg_acc_all[:,self.seed] = avg_acc_history
+        avg_acc_all[:,self.repeat_idx] = avg_acc_history
 
         # repack dictionary and return
         return {'global': avg_acc_all,'pt': avg_acc_pt,'pt-local': avg_acc_pt_local}
